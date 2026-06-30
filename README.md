@@ -1,5 +1,11 @@
 # FlowLens Task Mining
 
+## Downloadable Windows app
+
+Use `download\FlowLens-Task-Mining.exe` for the packaged app. The executable is built with the required runtime libraries bundled, including `Pillow`, `pynput`, and `psutil`, so end users should not need to run `pip install -r requirements.txt`.
+
+`requirements.txt` and `run.ps1` are for developers who want to run the Python source directly or rebuild the executable.
+
 FlowLens is a local-first Windows task-mining MVP. It records foreground
 applications, timestamps, window titles, time allocation, keystroke counts,
 mouse-click counts, application switches, and optional screenshots.

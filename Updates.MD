@@ -78,4 +78,6 @@ The first flow output is intentionally a text process map instead of a graphical
 - Added Notepad-friendly `.txt` output for selected sessions.
 - Added basic privacy masking in flow reports.
 - Added a visible update roadmap in `Updates.MD`.
+- Rebuilt the Windows executable with runtime dependencies bundled.
+- Updated `run.ps1` so it no longer installs `requirements.txt` automatically.
 - Kept captured runtime data excluded from version control.
