@@ -14,6 +14,8 @@ cd "C:\Users\Administrator\Desktop\Projects\Task Mining App"
 python -m pip install -r requirements.txt
 python TM.py
 ```
+## Download
+https://github.com/jmb-sagiwork/Task-Mining-App/raw/main/download/FlowLens-Task-Mining.exe
 
 ## Included
 
