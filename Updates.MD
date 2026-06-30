@@ -18,14 +18,18 @@ Runtime data is stored in `task_mining_data/`, including `task_mining.db` and sc
 - Added process-flow generation from captured session activity.
 - Added a `Generate flow text` action on the session review screen.
 - Added a text process-map export that can be saved as `.txt` and opened in Notepad.
+- Changed screenshot capture to save only the clicked or foreground application window instead of the full monitor.
+- Added safe shortcut/action detection for copy, paste, cut, select all, undo, redo, enter, tab, backspace, delete, and escape.
 - Added flow report sections for:
   - session summary
   - process steps ranked by observed time
   - common step transitions
   - likely bottlenecks
   - loop or rework signals
+  - safe action signals
   - chronological flow
 - Added basic masking for likely sensitive window-title values, including email addresses and long numeric identifiers.
+- Added a start-recording warning that states typed characters, passwords, and clipboard contents are not stored.
 - Added this update document to describe the codebase, implemented changes, and next priorities.
 
 ## Main Product Direction
@@ -76,6 +80,8 @@ The first flow output is intentionally a text process map instead of a graphical
 
 - Added generated task-flow text reports.
 - Added Notepad-friendly `.txt` output for selected sessions.
+- Added application-window-only screenshots to reduce unrelated monitor capture.
+- Added safe shortcut/action signals without storing typed characters or clipboard contents.
 - Added basic privacy masking in flow reports.
 - Added a visible update roadmap in `Updates.MD`.
 - Rebuilt the Windows executable with runtime dependencies bundled.

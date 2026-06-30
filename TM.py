@@ -73,6 +73,32 @@ class FlowTransition:
     duration_seconds: float = 0.0
 
 
+@dataclass
+class WindowBounds:
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+    def bbox(self) -> tuple[int, int, int, int] | None:
+        if self.right <= self.left or self.bottom <= self.top:
+            return None
+        return (self.left, self.top, self.right, self.bottom)
+
+
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
 def redact_window_title(value: str) -> str:
     """Keep flow reports useful without exporting likely identifiers."""
     if not value:
@@ -106,9 +132,17 @@ def build_flow_report(session: sqlite3.Row, rows: list[sqlite3.Row]) -> str:
     ordered_labels: list[str] = []
     previous_label: str | None = None
     switch_count = 0
+    action_counts: dict[str, int] = {}
+    action_sequence: list[tuple[str, str]] = []
 
     for row in rows:
+        event_type = row["event_type"] or "activity"
         label, hint = flow_label(row["application"], row["window_title"])
+        if event_type.startswith("action_"):
+            action = event_type.removeprefix("action_")
+            action_counts[action] = action_counts.get(action, 0) + 1
+            action_sequence.append((label, action))
+            continue
         duration = float(row["duration_seconds"] or 0)
         step = steps.setdefault(label, FlowStep(label=label, application=row["application"] or "Unknown", window_hint=hint))
         step.event_count += 1
@@ -195,6 +229,17 @@ def build_flow_report(session: sqlite3.Row, rows: list[sqlite3.Row]) -> str:
     if not loops and not repeated_returns:
         lines.append("No repeated loop pattern detected in this session.")
 
+    lines.extend(["", "Safe action signals", "-" * 72])
+    if action_counts:
+        for action, count in sorted(action_counts.items(), key=lambda item: (-item[1], item[0])):
+            lines.append(f"- {action.replace('_', ' ')}: {count:,} times")
+        lines.append("")
+        lines.append("Recent action context")
+        for label, action in action_sequence[-30:]:
+            lines.append(f"- {label}: {action.replace('_', ' ')}")
+    else:
+        lines.append("No copy/paste/navigation shortcut actions detected.")
+
     lines.extend(["", "Chronological flow", "-" * 72])
     compressed_flow: list[str] = []
     for label in ordered_labels:
@@ -221,6 +266,27 @@ class WindowsContext:
     def __init__(self) -> None:
         self.user32 = ctypes.windll.user32 if os.name == "nt" else None
         self.kernel32 = ctypes.windll.kernel32 if os.name == "nt" else None
+
+    def window_bounds_at_point(self, x: int, y: int) -> WindowBounds | None:
+        if not self.user32:
+            return None
+        point = POINT(int(x), int(y))
+        hwnd = self.user32.WindowFromPoint(point)
+        return self._window_bounds(hwnd)
+
+    def foreground_window_bounds(self) -> WindowBounds | None:
+        if not self.user32:
+            return None
+        return self._window_bounds(self.user32.GetForegroundWindow())
+
+    def _window_bounds(self, hwnd: int) -> WindowBounds | None:
+        if not hwnd:
+            return None
+        rect = RECT()
+        if not self.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return None
+        bounds = WindowBounds(rect.left, rect.top, rect.right, rect.bottom)
+        return bounds if bounds.bbox() else None
 
     def active_window(self) -> ActiveWindow:
         if not self.user32:
@@ -443,6 +509,8 @@ class Recorder:
         self.current_window = ActiveWindow()
         self.pending_keystrokes = 0
         self.pending_clicks = 0
+        self.last_click_point: tuple[int, int] | None = None
+        self.ctrl_down = False
         self.metrics = {
             "duration_seconds": 0,
             "keystrokes": 0,
@@ -456,7 +524,10 @@ class Recorder:
         if self.running:
             raise RuntimeError("A recording is already active.")
         if keyboard is None or mouse is None:
-            raise RuntimeError("pynput is not installed. Run: pip install -r requirements.txt")
+            raise RuntimeError(
+                "Input capture dependencies are unavailable. Use the packaged FlowLens executable, "
+                "or install requirements.txt only when running from source as a developer."
+            )
 
         self.settings = settings
         self.session_id = self.database.start_session(name, user_label, settings)
@@ -470,9 +541,11 @@ class Recorder:
         self.current_window = self.context.active_window()
         self.pending_keystrokes = 0
         self.pending_clicks = 0
+        self.last_click_point = None
+        self.ctrl_down = False
         self.metrics = {key: 0 for key in self.metrics}
 
-        self.keyboard_listener = keyboard.Listener(on_press=self._on_key_press)
+        self.keyboard_listener = keyboard.Listener(on_press=self._on_key_press, on_release=self._on_key_release)
         self.mouse_listener = mouse.Listener(on_click=self._on_click)
         self.keyboard_listener.start()
         self.mouse_listener.start()
@@ -515,17 +588,72 @@ class Recorder:
         self.events.put(("status", "Completed"))
         self.events.put(("session_completed", self.session_id))
 
-    def _on_key_press(self, _key) -> None:
+    def _on_key_press(self, key) -> None:
         if self.running and not self.paused:
             with self.lock:
                 self.pending_keystrokes += 1
                 self.metrics["keystrokes"] += 1
+            action = self._safe_key_action(key)
+            if action:
+                self._record_action(action)
 
-    def _on_click(self, _x, _y, _button, pressed: bool) -> None:
+    def _on_key_release(self, key) -> None:
+        if keyboard is None:
+            return
+        if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            self.ctrl_down = False
+
+    def _safe_key_action(self, key) -> str | None:
+        if keyboard is None:
+            return None
+        if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            self.ctrl_down = True
+            return None
+
+        if self.ctrl_down and hasattr(key, "char") and key.char:
+            shortcuts = {
+                "a": "select_all",
+                "c": "copy",
+                "v": "paste",
+                "x": "cut",
+                "y": "redo",
+                "z": "undo",
+            }
+            return shortcuts.get(key.char.lower())
+
+        special_keys = {
+            keyboard.Key.enter: "enter",
+            keyboard.Key.tab: "tab",
+            keyboard.Key.backspace: "backspace",
+            keyboard.Key.delete: "delete",
+            keyboard.Key.esc: "escape",
+        }
+        return special_keys.get(key)
+
+    def _record_action(self, action: str) -> None:
+        if not self.session_id:
+            return
+        window = self.context.active_window()
+        self.database.add_activity(
+            {
+                "session_id": self.session_id,
+                "captured_at": now_iso(),
+                "application": window.application,
+                "window_title": window.title,
+                "process_id": window.process_id,
+                "duration_seconds": 0,
+                "keystrokes": 0,
+                "mouse_clicks": 0,
+                "event_type": f"action_{action}",
+            }
+        )
+
+    def _on_click(self, x, y, _button, pressed: bool) -> None:
         if self.running and not self.paused and pressed:
             with self.lock:
                 self.pending_clicks += 1
                 self.metrics["mouse_clicks"] += 1
+                self.last_click_point = (int(x), int(y))
 
     def _record_loop(self) -> None:
         sample_interval = max(1, int(self.settings.get("sample_interval", 2)))
@@ -612,7 +740,18 @@ class Recorder:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             filename = f"{stamp}_{safe_filename(self.current_window.application)}_{reason}.jpg"
             path = session_dir / filename
-            image = ImageGrab.grab(all_screens=True)
+            with self.lock:
+                click_point = self.last_click_point
+            bounds = None
+            if click_point:
+                bounds = self.context.window_bounds_at_point(*click_point)
+            if bounds is None:
+                bounds = self.context.foreground_window_bounds()
+            bbox = bounds.bbox() if bounds else None
+            if bbox is None:
+                self.events.put(("error", "Screenshot skipped: no application window bounds were available."))
+                return
+            image = ImageGrab.grab(bbox=bbox, all_screens=True)
             quality = int(self.settings.get("screenshot_quality", 70))
             image.convert("RGB").save(path, "JPEG", quality=quality, optimize=True)
             with self.lock:
@@ -628,7 +767,7 @@ class Recorder:
                     "keystrokes": 0,
                     "mouse_clicks": 0,
                     "screenshot_path": str(path),
-                    "event_type": f"screenshot_{reason}",
+                    "event_type": f"screenshot_{reason}_app_window",
                 }
             )
             self.last_screenshot = time.monotonic()
@@ -1155,13 +1294,28 @@ class TaskMiningApp:
         if not self.consent.get():
             messagebox.showwarning(
                 "Consent required",
-                "Confirm that the participant has reviewed and accepted the capture notice.",
+                (
+                    "Confirm that the participant has reviewed and accepted the capture notice.\n\n"
+                    "FlowLens counts keystrokes and clicks, detects safe shortcut actions such as copy/paste, "
+                    "and can save application-window screenshots. It does not store typed characters, "
+                    "password text, or clipboard contents."
+                ),
             )
             return
         name = self.session_name.get().strip()
         participant = self.user_label.get().strip()
         if not name or not participant:
             messagebox.showwarning("Missing details", "Enter a session name and participant label.")
+            return
+        if not messagebox.askyesno(
+            "Start local capture?",
+            (
+                "FlowLens will record app/window names, durations, click counts, keystroke counts, "
+                "safe shortcut actions such as copy/paste, and optional application-window screenshots.\n\n"
+                "It will not store typed characters, password text, or clipboard contents.\n\n"
+                "Start recording now?"
+            ),
+        ):
             return
         try:
             self.recorder.start(name, participant, self._settings())

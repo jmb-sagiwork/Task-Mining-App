@@ -10,6 +10,12 @@ FlowLens is a local-first Windows task-mining MVP. It records foreground
 applications, timestamps, window titles, time allocation, keystroke counts,
 mouse-click counts, application switches, and optional screenshots.
 
+For privacy, FlowLens does not store typed characters, passwords, or clipboard
+contents. It records keystroke counts and safe action signals such as copy,
+paste, cut, select all, undo, redo, enter, tab, backspace, delete, and escape.
+Screenshots are limited to the clicked or foreground application window instead
+of the entire monitor.
+
 It deliberately does **not** store typed characters, clipboard contents,
 passwords, or form values.
 
