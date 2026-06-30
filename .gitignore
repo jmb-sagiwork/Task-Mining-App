@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+task_mining_data/
+build/
+dist/
+*.spec
